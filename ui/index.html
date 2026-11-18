@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Clipper</title>
+<link rel="icon" href="/ui/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav class="tabs" aria-label="Main">
+  <a href="#/create" data-tab="create"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Create</a>
+  <a href="#/clips" data-tab="clips"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 8l4 2.5-4 2.5z"/></svg>Clips<span id="qbadge" class="badge hidden"></span></a>
+  <a href="#/style" data-tab="style"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Style</a>
+  <a href="#/accounts" data-tab="accounts"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>Accounts</a>
+  <a href="#/setup" data-tab="setup"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-2.6-.6-.6-2.6z"/></svg>Setup</a>
+</nav>
+<main id="view" aria-live="polite"></main>
+<div id="toasts" role="status"></div>
+<div id="login" class="hidden">
+  <form id="loginform">
+    <h1>Clipper</h1>
+    <label class="f"><span class="l">Password</span><input type="password" id="pw" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">Sign in</button>
+    <div id="loginerr" class="small" style="color:var(--bad)"></div>
+  </form>
+</div>
+<script src="/ui/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+.env
+token.json
+*token*.json
+client_secret*.json
+*.log
+output/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.mp4
+*.mp3
+*.flac
+*.ass
+data/

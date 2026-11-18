@@ -1,0 +1,12 @@
+# Required
+requests>=2.31
+google-api-python-client>=2.100
+google-auth>=2.23
+google-auth-oauthlib>=1.1
+
+# Optional (the agent runs without these; see README)
+# faster-whisper>=1.0        # local transcription; if missing, Gemini audio fallback is used
+# OpenCV: on Termux use `pkg install x11-repo` then `pkg install opencv-python python-numpy` (pip fails). Elsewhere: opencv-python-headless
+
+# Tests only
+# pytest
