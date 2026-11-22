@@ -196,6 +196,7 @@ class Config:
     clip_durations: tuple = (15, 30, 45, 60)
     max_overlap: float = 0.2
     min_score: int = 0                # drop clips scoring below this (the best one is always kept)
+    clip_finder: str = "video"        # video = Gemini watches the video, then only the chosen parts are transcribed | transcript = transcribe everything first
     live_minutes: int = 60            # live streams: use this many minutes before the moment you paste the link (0 = all available)
     clip_focus: str = ""              # free text: what kind of moments to look for
     # --- transcription ---
@@ -272,6 +273,8 @@ class Config:
         if not self.clip_durations or any(d <= 0 for d in self.clip_durations):
             raise ConfigError("CLIP_DURATIONS must be positive integers, e.g. 15,30,45,60")
         self.clip_durations = tuple(sorted(set(self.clip_durations)))
+        if self.clip_finder not in ("video", "transcript"):
+            raise ConfigError("clip_finder must be video or transcript")
         if self.live_minutes not in (0, 15, 30, 60, 120):
             raise ConfigError("live_minutes must be 0, 15, 30, 60 or 120")
         if self.clip_count < 1:

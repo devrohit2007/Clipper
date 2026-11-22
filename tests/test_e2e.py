@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,9 @@ out = a[a.index("-o") + 1]
 if "--download-sections" in a:
     m = re.match(r"\\*([\\d.]+)-([\\d.]+)", a[a.index("--download-sections") + 1])
     dur = float(m.group(2)) - float(m.group(1))
+    if "bestaudio/best" in a:
+        ff("-f", "lavfi", "-i", f"sine=f=300:d={{dur}}", out.replace("%(ext)s", "m4a"))
+        sys.exit(0)
     ff("-f", "lavfi", "-i", f"testsrc2=s=640x360:r=25:d={{dur}}", "-f", "lavfi", "-i", f"sine=f=300:d={{dur}}",
        "-pix_fmt", "yuv420p", "-shortest", out)
 else:
@@ -210,7 +214,7 @@ def test_failed_upload_keeps_the_file_and_can_be_retried(rig, monkeypatch):
 def test_second_job_for_same_video_reuses_saved_transcript(rig):
     app, c, calls, tmp = rig
     for _ in range(2):
-        r = c.j("POST", "/api/jobs", {"url": "https://youtu.be/fakevid1", "options": {"mode": "review", "clip_count": 1}})[1]
+        r = c.j("POST", "/api/jobs", {"url": "https://youtu.be/fakevid1", "options": {"mode": "review", "clip_count": 1, "clip_finder": "transcript"}})[1]
         settle(c, r["id"], "review")
     assert calls["transcribe"] == 1
 
@@ -232,7 +236,7 @@ def test_template_caption_mode_and_quality_flow_through_the_whole_app(rig):
     clip = v["clips"][0]
     path = app.store.job(r["id"])["data"]["clips"]["clip1"]["file"]
     # quality ceiling reached yt-dlp
-    section_calls = [l for l in open(calls["ytdlp_log"]).read().splitlines() if "--download-sections" in l]
+    section_calls = [l for l in open(calls["ytdlp_log"]).read().splitlines() if "--download-sections" in l and "bestaudio" not in l]
     assert section_calls and all("height<=720" in l for l in section_calls)
     # white page with the tweet card; defaults for the texts come from the generated metadata
     assert frame_px(path, 2, 2) == (255, 255, 255)
@@ -366,3 +370,60 @@ def test_live_stream_is_saved_up_to_now_and_clips_are_cut_from_it(rig, monkeypat
     wait_for(lambda: not status(c, r["id"])["busy"], timeout=120)
     settle(c, r["id"], "review")
     assert "--download-sections" not in open(calls["ytdlp_log"]).read()
+
+
+def test_gemini_watches_first_and_only_the_chosen_part_is_transcribed(rig, monkeypatch):
+    """Gemini names a moment at 25-50 s of a 60 s video. Only that part (plus padding) may be downloaded and
+    transcribed, and the clip must land on the right words after the part is moved back onto the video's timeline."""
+    app, c, calls, tmp = rig
+    seen = {"watch": 0, "parts": []}
+
+    class Scout(FakeGemini):
+        def generate_json(self, prompt, **kw):
+            if isinstance(prompt, list):                                  # the "watch the video" request
+                seen["watch"] += 1
+                assert kw.get("media_low") is True
+                assert prompt[0]["fileData"]["fileUri"] == "https://youtu.be/fakevid1"
+                return {"clips": [{"start": "00:25", "end": "00:50", "title": "Late part", "score": 90, "reason": "r",
+                                   "hook": "h", "description": "d", "hashtags": ["#x"]}]}
+            return super().generate_json(prompt, **kw)
+    monkeypatch.setattr(webapp.pipeline, "make_client", lambda cfg: Scout())
+
+    def part_transcribe(audio, cfg, client, duration, jobdir):
+        seen["parts"].append(round(duration))
+        ws = []
+        for i in range(int(duration)):                                    # one word per second, a sentence every 5 s, times are relative
+            ws.append({"word": f"r{i}" + ("." if i % 5 == 4 else ""), "start": i + 0.05, "end": i + 0.9})
+        segs = [{"start": ws[k]["start"], "end": ws[min(k + 4, len(ws) - 1)]["end"], "text": " ".join(w["word"] for w in ws[k:k + 5]),
+                 "words": ws[k:k + 5]} for k in range(0, len(ws), 5)]
+        return {"engine": "groq", "language": "en", "duration": duration, "segments": segs}
+    monkeypatch.setattr(webapp.pipeline.transcription, "transcribe", part_transcribe)
+
+    r = c.j("POST", "/api/jobs", {"url": "https://youtu.be/fakevid1", "options": {"mode": "review", "clip_count": 1}})[1]
+    v = settle(c, r["id"], "review")
+    assert seen["watch"] == 1 and seen["parts"] == [45]                   # 25-50 s plus padding, clamped to the video: 15-60 s
+    plan = app.store.job(r["id"])["data"]["plan"]
+    assert len(plan) == 1 and 24 <= plan[0]["start"] <= 27 and 49 <= plan[0]["end"] <= 51
+    tr = json.load(open(next(Path(tmp, "tmp").rglob("transcript.json"))))
+    assert tr["partial"] is True and tr["windows"] == [[15.0, 60.0]]
+    log = open(calls["ytdlp_log"]).read()
+    assert "--download-sections *15.00-60.00 -f bestaudio/best" in log
+    assert "*0.00-60.00" not in log and "sine" not in log
+
+
+def test_falls_back_to_whole_video_transcript_when_gemini_cannot_watch(rig, monkeypatch):
+    from modules.ai_analyzer import GeminiError
+    app, c, calls, tmp = rig
+
+    class Blind(FakeGemini):
+        def generate_json(self, prompt, **kw):
+            if isinstance(prompt, list):
+                raise GeminiError("video not accessible")
+            return super().generate_json(prompt, **kw)
+    monkeypatch.setattr(webapp.pipeline, "make_client", lambda cfg: Blind())
+    r = c.j("POST", "/api/jobs", {"url": "https://youtu.be/fakevid1", "options": {"mode": "review", "clip_count": 1}})[1]
+    v = settle(c, r["id"], "review")
+    assert v["clips"][0]["status"] == "rendered"
+    assert calls["transcribe"] == 1
+    tr = json.load(open(next(Path(tmp, "tmp").rglob("transcript.json"))))
+    assert not tr.get("partial")

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace as dc_replace
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from . import (caption_lang, captions, clip_selector, content_generator, templates, transcription, video_editor,
+from . import (caption_lang, captions, clip_selector, content_generator, templates, transcription, video_editor, video_scout,
                youtube_uploader)
 from .ai_analyzer import make_client
 from .scheduling import Scheduler, to_iso
@@ -139,7 +139,7 @@ def get_transcript(ctx: Ctx, info: dict) -> dict:
     cache = transcript_path(ctx, info)
     if not ctx.fresh:
         tr = load_transcript(ctx, info)
-        if tr:
+        if tr and not tr.get("partial"):                   # a partial one only covers the chosen moments
             log.info("Using saved transcript")
             return tr
     jobdir = os.path.dirname(cache)
@@ -159,6 +159,51 @@ def get_transcript(ctx: Ctx, info: dict) -> dict:
     safe_remove(audio) if live else safe_remove(src, audio)       # never delete the saved live recording
     log.info("Transcript: %s, language=%s, %d segments", tr["engine"], tr["language"], len(tr["segments"]))
     return tr
+
+
+def find_first(ctx: Ctx, info: dict) -> tuple[dict, list[dict]]:
+    """Gemini watches the video and picks the moments; only those parts are downloaded and transcribed."""
+    cfg = ctx.cfg
+    duration = float(info["duration"])
+    ctx.progress("select", 6, "Gemini is watching the video")
+    log.info("Gemini is watching the video to find the best moments...")
+    raw = video_scout.scout(ctx.url, info, ctx.client.generate_json, cfg.clip_durations, cfg.clip_count, cfg.clip_focus,
+                            progress=lambda i, n: (ctx.check_cancel(), ctx.progress("select", 6 + 14 * i / n, f"Gemini is watching the video ({i + 1}/{n})")))
+    cands = video_scout.shortlist(raw, duration, cfg.clip_count, cfg.max_overlap)
+    spans = video_scout.windows(cands, duration)
+    total = sum(e - s for s, e in spans)
+    log.info("Transcribing %d part(s), %.0f s of audio instead of the whole %.0f s", len(spans), total, duration)
+    jobdir = os.path.dirname(transcript_path(ctx, info))
+    os.makedirs(jobdir, exist_ok=True)
+    pieces = []
+    for i, (s, e) in enumerate(spans):
+        ctx.check_cancel()
+        ctx.progress("audio", 22 + 6 * i / len(spans), f"Downloading part {i + 1} of {len(spans)}")
+        wd = os.path.join(jobdir, f"part{i}")
+        os.makedirs(wd, exist_ok=True)
+        src = video_editor.download_audio_section(ctx.url, s, e, os.path.join(wd, "audio_src"))
+        audio = transcription.extract_audio(src, os.path.join(wd, "audio.flac"))
+        ctx.progress("transcribe", 28 + 10 * i / len(spans), f"Transcribing part {i + 1} of {len(spans)}")
+        tr = transcription.transcribe(audio, cfg, ctx.client, e - s, wd)
+        pieces.append(video_scout.shift_transcript(tr, s))
+        safe_remove(src, audio)
+    transcript = video_scout.merge_transcripts(pieces, duration, spans)
+    words = clip_selector.flatten_words(transcript)
+    if not words:
+        raise ClipperError("no speech was found in the chosen parts")
+    ctx.progress("select", 40, "Checking the moments against the speech")
+    plan = clip_selector.validate_candidates(cands, words, duration, cfg.clip_durations, cfg.max_overlap, tol=8.0)
+    if cfg.min_score and plan:
+        plan = [c for c in plan if c["score"] >= cfg.min_score] or plan[:1]
+    plan = plan[:cfg.clip_count]
+    if not plan:
+        raise ClipperError("none of Gemini's moments lined up with real speech")
+    for i, c in enumerate(plan, 1):
+        c["id"] = f"clip{i}"
+    with open(transcript_path(ctx, info), "w", encoding="utf-8") as f:
+        json.dump(transcript, f, ensure_ascii=False)
+    ctx.state.set(plan=plan, language=transcript["language"], transcript_engine=transcript["engine"])
+    return transcript, plan
 
 
 def plan_clips(ctx: Ctx, info: dict, transcript: dict) -> list[dict]:
@@ -394,7 +439,22 @@ def run_job(ctx: Ctx) -> dict:
     st.set(url=ctx.url, title=info["title"], duration=info["duration"], status="running")
     ctx.check_cancel()
 
-    transcript = get_transcript(ctx, info)
+    transcript = None if ctx.fresh else load_transcript(ctx, info)
+    plan_saved = bool(st.data.get("plan")) and not ctx.fresh
+    if transcript and (plan_saved or not transcript.get("partial")):
+        log.info("Using saved transcript")
+    else:
+        transcript = None
+        if cfg.clip_finder == "video" and ctx.client is not None and not info.get("live_file") and info.get("duration"):
+            try:
+                transcript, _ = find_first(ctx, info)
+            except Cancelled:
+                raise
+            except ClipperError as e:
+                log.warning("Finding clips by watching the video did not work (%s). Transcribing the whole video instead.", redact(e))
+                transcript = None
+    if transcript is None:
+        transcript = get_transcript(ctx, info)
     st.set(language=transcript["language"], transcript_engine=transcript["engine"])
     ctx.check_cancel()
     plan = plan_clips(ctx, info, transcript)

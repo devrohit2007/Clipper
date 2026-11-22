@@ -136,7 +136,7 @@ def nearest_length(dur: float, durations: tuple) -> int:
 
 
 def validate_candidates(raw: list, words: list[dict], duration: float, durations: tuple,
-                        max_overlap: float = 0.2) -> list[dict]:
+                        max_overlap: float = 0.2, tol: float = 2.0) -> list[dict]:
     """Validate, snap, de-duplicate. Returns clips sorted by score desc (no limit applied)."""
     min_dur = max(8.0, 0.6 * min(durations))
     max_dur = float(max(durations))
@@ -152,7 +152,7 @@ def validate_candidates(raw: list, words: list[dict], duration: float, durations
         if e > duration + 1.0 or s >= duration:
             log.debug("rejected candidate beyond video duration: %s-%s", s, e)
             continue
-        snapped = snap_clip(words, s, min(e, duration), min_dur=min_dur, max_dur=max_dur, duration=duration)
+        snapped = snap_clip(words, s, min(e, duration), min_dur=min_dur, max_dur=max_dur, duration=duration, tol=tol)
         if not snapped:
             log.debug("rejected candidate not aligned with speech: %s-%s", s, e)
             continue

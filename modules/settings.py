@@ -91,6 +91,10 @@ SCHEMA = [
     F("live_minutes", "Live streams: use the last", "Clips", "select", as_int=True, choices=[
         ["15", "15 minutes"], ["30", "30 minutes"], ["60", "1 hour"], ["120", "2 hours"], ["0", "Everything available (up to 4 hours)"]],
       help_="If the link is a stream that is still running, it is saved up to that moment and clips are cut from the last part."),
+    F("clip_finder", "How clips are found", "Clips", "select", choices=[
+        ["video", "Gemini watches the video first, then only those parts are transcribed (faster)"],
+        ["transcript", "Transcribe the whole video first (slower, most exact)"]],
+      help_="The fast way downloads and transcribes just the chosen moments. If Gemini cannot watch the video (private video, no access), the whole video is transcribed instead."),
     F("clip_focus", "What to look for", "Clips", "textarea", help_="Optional, e.g. 'funny moments and strong opinions'."),
     F("max_overlap", "Allowed overlap between clips", "Clips", "float", min=0, max=0.5, step=0.05, advanced=True),
     # ---- AI

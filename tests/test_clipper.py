@@ -730,3 +730,59 @@ def test_unstarted_or_just_ended_streams_are_refused_but_running_ones_become_the
     assert info["is_live"] and info["id"].startswith("x_live") and info["duration"] == 0
     fake("was_live", duration=60)
     assert video_editor.get_info("https://youtu.be/x")["id"] == "x"
+
+
+# ---------------------------------------------------------------- Gemini watches the video first
+def test_scout_chunks_windows_and_time_handling():
+    from modules import video_scout as vs
+    assert vs.chunk_ranges(600) == [(0.0, 600)]                                  # short video: one request, whole video
+    r = vs.chunk_ranges(3600)
+    assert r[0] == (0.0, 900) and r[1][0] == 840 and r[-1][1] == 3600 and len(r) == 5
+    # times are relative to the piece Gemini saw, unless a time is larger than the piece (then already absolute)
+    rel = vs._to_absolute([{"start": "01:00", "end": "01:30"}], 840, 1740, whole=False)
+    assert (rel[0]["start"], rel[0]["end"]) == (900, 930)
+    ab = vs._to_absolute([{"start": "20:00", "end": "21:00"}], 840, 1740, whole=False)
+    assert ab[0]["start"] == 1200
+    whole = vs._to_absolute([{"start": "01:00", "end": "01:30"}, {"start": "x", "end": "2"}, {"start": 50, "end": 40}], 0, 600, whole=True)
+    assert len(whole) == 1 and whole[0]["start"] == 60
+    raw = [{"start": 100, "end": 130, "score": 50}, {"start": 105, "end": 128, "score": 90}, {"start": 400, "end": 430, "score": 70},
+           {"start": 9999, "end": 10020, "score": 99}]
+    short = vs.shortlist(raw, 1000, 1)
+    assert [c["score"] for c in short] == [90, 70]                                  # overlap dropped, beyond-video dropped, count+spare
+    w = vs.windows([{"start": 100, "end": 130}, {"start": 140, "end": 170}, {"start": 500, "end": 530}], 1000)
+    assert w == [(90.0, 185.0), (490.0, 545.0)]                                      # near ones merged, padded
+    assert vs.windows([{"start": 2, "end": 995}], 1000) == [(0.0, 1000)]
+
+
+def test_transcript_pieces_move_onto_the_video_timeline():
+    from modules import video_scout as vs
+    piece = {"engine": "groq", "language": "hi", "word_level": True, "duration": 10,
+             "segments": [{"start": 1.0, "end": 3.0, "text": "a b", "words": [{"word": "a", "start": 1.0, "end": 2.0}, {"word": "b", "start": 2.0, "end": 3.0}]}]}
+    moved = vs.shift_transcript(piece, 100)
+    assert moved["segments"][0]["start"] == 101 and moved["segments"][0]["words"][1]["end"] == 103
+    assert piece["segments"][0]["start"] == 1.0                                      # original untouched
+    merged = vs.merge_transcripts([moved, vs.shift_transcript(piece, 50)], 600, [(50, 60), (100, 110)])
+    assert [s["start"] for s in merged["segments"]] == [51, 101] and merged["partial"] and merged["language"] == "hi"
+
+
+def test_gemini_video_request_shape(monkeypatch):
+    from modules import ai_analyzer, video_scout as vs
+    sent = {}
+
+    class R:
+        status_code = 200
+        text = "{}"
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": '{"clips": []}'}]}}]}
+
+    class S:
+        def post(self, url, headers, json, timeout):
+            sent["body"], sent["url"], sent["headers"] = json, url, headers
+            return R()
+    g = ai_analyzer.GeminiClient("K" * 10, "gemini-x", session=S())
+    g.generate_json(vs.video_parts("https://youtu.be/abc", "find", 840, 1740, whole=False), media_low=True)
+    part = sent["body"]["contents"][0]["parts"][0]
+    assert part == {"fileData": {"fileUri": "https://youtu.be/abc"}, "videoMetadata": {"startOffset": "840s", "endOffset": "1740s"}}
+    assert sent["body"]["generationConfig"]["mediaResolution"] == "MEDIA_RESOLUTION_LOW"
+    assert "K" * 10 not in sent["url"] and sent["headers"]["x-goog-api-key"] == "K" * 10
+    assert "videoMetadata" not in vs.video_parts("u", "p", 0, 600, whole=True)[0]

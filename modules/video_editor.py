@@ -130,6 +130,17 @@ def download_audio(url: str, dst_noext: str) -> str:
     raise EditError("yt-dlp did not produce an audio file")
 
 
+def download_audio_section(url: str, start: float, end: float, dst_noext: str) -> str:
+    """Download only the audio between start and end (seconds) of a video."""
+    run(["yt-dlp", "--no-playlist", "--force-overwrites", "--force-keyframes-at-cuts",
+         "--download-sections", f"*{start:.2f}-{end:.2f}", "-f", "bestaudio/best", "-o", dst_noext + ".%(ext)s", url],
+        timeout=1800)
+    for ext in ("m4a", "webm", "opus", "mp3", "mp4", "ogg", "wav"):
+        if file_ok(f"{dst_noext}.{ext}"):
+            return f"{dst_noext}.{ext}"
+    raise EditError("yt-dlp did not produce an audio file for that part")
+
+
 def format_for(max_height: int) -> str:
     """Best video up to max_height plus best audio; falls back so a video without that size still downloads."""
     h = int(max_height)

@@ -43,8 +43,10 @@ runs on your own machine (`http://localhost:8000`), or from the command line.
 
 ## What it does
 
-- **Finds the moments.** Gemini reads the real transcript and picks 15, 30, 45 or 60 second clips. Every start and end
-  time is checked against the video and snapped to word boundaries, so clips begin and end on full sentences.
+- **Finds the moments fast.** Gemini watches the video and picks 15, 30, 45 or 60 second clips. Only those parts are
+  downloaded and transcribed (not the whole video), then every start and end time is checked against the real speech and
+  snapped to word boundaries, so clips begin and end on full sentences. A "transcribe everything first" mode is
+  available too.
 - **Four looks (templates).** Blurred background (default), white page with a tweet-style card, plain black, or
   full screen that follows the speaker's face.
 - **Captions.** Word by word (karaoke style, five styles), one fixed line for the whole clip, or none. Works for
@@ -65,10 +67,10 @@ runs on your own machine (`http://localhost:8000`), or from the command line.
 
 ```mermaid
 flowchart LR
-    A[YouTube link] --> B[Transcript<br/>faster-whisper / Groq / Gemini]
-    B --> C[Gemini picks clips<br/>and writes metadata]
-    C --> D[yt-dlp downloads<br/>only those parts]
-    D --> E[FFmpeg renders 9:16<br/>captions, logo, music, outro]
+    A[YouTube link] --> B[Gemini watches the video<br/>and picks the moments]
+    B --> C[yt-dlp downloads the audio<br/>of only those moments]
+    C --> D[Groq transcribes only those parts<br/>and the clips snap to full sentences]
+    D --> E[yt-dlp downloads the video<br/>of the final clips, FFmpeg renders 9:16]
     E --> F{Review?}
     F -->|yes| G[You check and edit]
     F -->|no| H[Upload and schedule]
@@ -77,8 +79,9 @@ flowchart LR
 
 | Step | Runs where |
 |---|---|
-| Choosing clips, titles, descriptions, hashtags | Google Gemini API (it receives the **transcript text**, not your video) |
-| Speech to text | Local faster-whisper if installed, otherwise Groq's free Whisper API, otherwise Gemini |
+| Finding the best moments | Google Gemini API. It **watches the video through its YouTube link** (public videos only) |
+| Titles, descriptions, hashtags | Google Gemini API (it receives the transcript text of each clip) |
+| Speech to text | Only for the chosen moments (plus a few seconds around each): local faster-whisper if installed, otherwise Groq's free Whisper API, otherwise Gemini |
 | Download, cut, render, captions | Your device (yt-dlp, FFmpeg) |
 | Face follow | Your device (OpenCV, optional) |
 | Upload | YouTube Data API |
@@ -570,6 +573,7 @@ Every item can be set in `.env`. Most can also be changed on the Style screen. F
 | `YOUTUBE_CLIENT_SECRETS`, `YOUTUBE_TOKEN_FILE` | `client_secret.json`, `token.json` | YouTube sign-in files. |
 | `OUTPUT_DIR`, `TEMP_DIR`, `DATA_DIR` | `output`, `output/tmp`, `data` | Where files are kept. |
 | `CLIP_COUNT`, `CLIP_DURATIONS` | `3`, `15,30,45,60` | How many clips and allowed lengths in seconds. |
+| `CLIP_FINDER` | `video` | `video`: Gemini watches the video, then only the chosen parts are transcribed (fast). `transcript`: transcribe the whole video first (slower, most exact). |
 | `TEMPLATE` | `blur` | `blur`, `tweet`, `black`, `face`. |
 | `TWEET_NAME`, `TWEET_HANDLE`, `TWEET_AVATAR` | empty | Tweet card identity; avatar falls back to `LOGO_FILE`. |
 | `CAPTION_ENABLED`, `CAPTION_MODE` | `true`, `words` | Captions on or off; `words` or `single`. |
@@ -731,6 +735,25 @@ clip with a stand-in `yt-dlp`, and that every Style setting changes the rendered
 It takes several minutes. Tests that need FFmpeg's `ass` filter are skipped if it is missing.
 
 ---
+
+## Finding clips: two modes
+
+| Mode | What happens | Best for |
+|---|---|---|
+| `video` (default) | Gemini watches the video through its YouTube link and names the moments. Only those parts (plus about 10 s before and 15 s after) are downloaded and transcribed. A one-hour video needs minutes of audio instead of an hour. | Speed, long videos, small phones |
+| `transcript` | The whole audio is downloaded and transcribed first, then Gemini reads the transcript. | Private or unlisted videos, the most exact timing |
+
+Choose it under **More options** on New clips, in Style → Clips, or with `CLIP_FINDER` in `.env`.
+
+Good to know about `video` mode:
+- Gemini can only watch **public** YouTube videos. If it cannot (private video, no access, quota), Clipper says so in the
+  log and switches to the `transcript` mode by itself.
+- Long videos are shown to Gemini in 15-minute pieces. Google limits how much video the free tier can watch per day
+  (check the Gemini API pricing page for the current number); the `transcript` mode does not use that allowance.
+- Gemini's timestamps can be a few seconds off. That is why each moment is transcribed with extra seconds around it and
+  then snapped to real sentence boundaries. A moment that does not line up with speech is dropped.
+- Live streams always use the saved recording and the `transcript` mode.
+- This mode has been tested with a stand-in for Gemini and yt-dlp, not with the real services.
 
 ## Limitations
 

@@ -184,7 +184,7 @@ async function pageCreate(view, _p, token) {
   const v = () => S.values;                       // saved settings; the page only sends what differs
   const opts = { mode: "review", account: S.accounts[0] && S.accounts[0].id };
   const COMMON = ["template", "tweet_name", "tweet_handle", "tweet_avatar", "caption_enabled", "caption_mode", "caption_language", "caption_style",
-    "intro_hook", "clip_count", "clip_durations", "max_height", "live_minutes"];
+    "intro_hook", "clip_count", "clip_durations", "max_height", "live_minutes", "clip_finder"];
   const state = {};
   const reset = () => COMMON.forEach((k) => (state[k] = Array.isArray(v()[k]) ? v()[k].join(",") : v()[k]));
   reset();
@@ -278,6 +278,7 @@ async function pageCreate(view, _p, token) {
     h("details", { class: "card" }, h("summary", { text: "More options for this video" }),
       h("div", { class: "stack", style: "margin-top:12px" },
         h("label", { class: "f" }, h("span", { class: "l", text: "What kind of moments to look for" }), focus),
+        field("clip_finder", "How clips are found"),
         field("live_minutes", "If the link is a live stream, use the last"),
         h("div", { class: "small muted", text: "A stream that is still running is saved up to this moment, then clips are cut from it." }),
         h("label", { class: "f" }, h("span", { class: "l", text: "Visibility" }), vis),

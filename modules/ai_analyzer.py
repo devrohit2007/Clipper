@@ -159,20 +159,22 @@ class GeminiClient:
         raise GeminiError(f"All Gemini models failed ({summary})")
 
     def generate_text(self, prompt: Union[str, list], *, json_mode: bool = False,
-                      temperature: float = 0.3) -> str:
+                      temperature: float = 0.3, media_low: bool = False) -> str:
         parts = [{"text": prompt}] if isinstance(prompt, str) else prompt
         body: dict = {"contents": [{"parts": parts}], "generationConfig": {"temperature": temperature}}
         if json_mode:
             body["generationConfig"]["responseMimeType"] = "application/json"
+        if media_low:                                   # video input: fewer tokens per second, plenty to find moments
+            body["generationConfig"]["mediaResolution"] = "MEDIA_RESOLUTION_LOW"
         return self._request(body)
 
-    def generate_json(self, prompt: Union[str, list], *, temperature: float = 0.3) -> Any:
-        text = self.generate_text(prompt, json_mode=True, temperature=temperature)
+    def generate_json(self, prompt: Union[str, list], *, temperature: float = 0.3, media_low: bool = False) -> Any:
+        text = self.generate_text(prompt, json_mode=True, temperature=temperature, media_low=media_low)
         try:
             return extract_json(text)
         except ValueError:
             log.warning("Gemini reply was not valid JSON; asking once more")
-            again = self.generate_text(prompt, json_mode=True, temperature=0.0)
+            again = self.generate_text(prompt, json_mode=True, temperature=0.0, media_low=media_low)
             try:
                 return extract_json(again)
             except ValueError as e:
