@@ -41,6 +41,22 @@ def get_info(url: str) -> dict:
     return info
 
 
+def local_info(path: str) -> dict:
+    """Details of a video file on this computer, in the same shape get_info gives for a link."""
+    import hashlib
+    path = os.path.abspath(path)
+    if not file_ok(path):
+        raise EditError("That video file was not found (or is empty).")
+    p = probe(path)
+    if not p["has_video"] or p["duration"] <= 0:
+        raise EditError("That file has no video in it.")
+    stem = os.path.splitext(os.path.basename(path))[0]
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-")[:30] or "video"
+    key = hashlib.sha1(f"{path}|{os.path.getsize(path)}|{int(os.path.getmtime(path))}".encode()).hexdigest()[:6]
+    return {"id": f"local_{slug}_{key}", "title": stem.replace("_", " ").strip() or "My video", "description": "",
+            "duration": float(p["duration"]), "uploader": "", "url": "", "local_file": path}
+
+
 def _fetch_text(src: str) -> str:
     if os.path.isfile(src):
         return open(src, encoding="utf-8", errors="replace").read()
@@ -111,13 +127,17 @@ def record_live(url: str, dst: str, minutes: int = 60, max_height: int = 1080) -
     return float(probe(dst)["duration"])
 
 
-def cut_local(src: str, start: float, end: float, raw: str) -> str:
-    """Cut one section out of the saved live recording (frame accurate, re-encoded)."""
+def cut_local(src: str, start: float, end: float, raw: str, max_height: int = 0) -> str:
+    """Cut one section out of a file on this computer (a saved live recording or your own video). Frame accurate.
+    This is only the working copy that gets re-encoded once more at render time, so it uses the fastest x264
+    setting and is shrunk to max_height first (a 4K file would otherwise be processed at full size)."""
     safe_remove(raw)
-    run(["ffmpeg", "-y", "-ss", f"{start:.2f}", "-i", src, "-t", f"{end - start:.2f}", "-c:v", "libx264", "-preset", "veryfast",
-         "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", raw], timeout=1800)
+    scale = ["-vf", f"scale=-2:'min(ih,{int(max_height)})'"] if max_height else []
+    run(["ffmpeg", "-y", "-ss", f"{start:.2f}", "-i", src, "-t", f"{end - start:.2f}", *scale, "-c:v", "libx264",
+         "-preset", "ultrafast", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", raw],
+        timeout=1800)
     if not file_ok(raw):
-        raise EditError("Cutting the clip from the live recording failed.")
+        raise EditError("Cutting the clip from the video file failed.")
     return raw
 
 
@@ -350,7 +370,7 @@ def build_video_graph(*, mode: str, src_w: int, src_h: int, out_dur: float, keys
                       logo_idx: Optional[int], logo_size: int, logo_pos: str = "top-right",
                       logo_opacity: float = 1.0, template: str = "blur", layout=None,
                       tweet_ass_name: Optional[str] = None, avatar_idx: Optional[int] = None,
-                      avatar_default: bool = False) -> list[str]:
+                      avatar_default: bool = False, badge_ass_name: Optional[str] = None) -> list[str]:
     s: list[str] = []
     src = "[0:v]"
     if keep:
@@ -387,6 +407,12 @@ def build_video_graph(*, mode: str, src_w: int, src_h: int, out_dur: float, keys
         s.append(f"[{cur}]ass={opt}[tw]")
         s += templates.avatar_filters(avatar_idx if not avatar_default else None, layout.card_x, layout.card_y, "tw", "twa")
         cur = "twa"
+    if badge_ass_name:                           # "Part 1" label, top-left, any template except the tweet card
+        opt = f"filename='{ff_path(badge_ass_name)}'"
+        if fonts_dir:
+            opt += f":fontsdir='{ff_path(fonts_dir)}'"
+        s.append(f"[{cur}]ass={opt}[bdg]")
+        cur = "bdg"
     if ass_name:
         opt = f"filename='{ff_path(ass_name)}'"
         if fonts_dir:
@@ -441,7 +467,7 @@ def encode_args(cfg=None) -> list:
 
 def render_main(raw: str, out: str, *, cfg, ass_path: Optional[str], keep: Optional[list],
                 mode: str, keys: Optional[list], workdir: str, template: str = "blur", layout=None,
-                tweet_ass_path: Optional[str] = None) -> str:
+                tweet_ass_path: Optional[str] = None, badge_ass_path: Optional[str] = None) -> str:
     raw, out = os.path.abspath(raw), os.path.abspath(out)
     info = probe(raw)
     if not info["has_video"]:
@@ -478,7 +504,8 @@ def render_main(raw: str, out: str, *, cfg, ass_path: Optional[str], keep: Optio
                            fonts_dir=cfg.caption_fonts_dir, logo_idx=logo_idx, logo_size=cfg.logo_size,
                            logo_pos=cfg.logo_position, logo_opacity=cfg.logo_opacity, template=template, layout=layout,
                            tweet_ass_name=os.path.basename(tweet_ass_path) if tweet_ass_path else None,
-                           avatar_idx=avatar_idx, avatar_default=avatar_default)
+                           avatar_idx=avatar_idx, avatar_default=avatar_default,
+                           badge_ass_name=os.path.basename(badge_ass_path) if badge_ass_path else None)
     ag = build_audio_graph(keep=keep, music_idx=music_idx, silent_idx=silent_idx, music_volume=cfg.music_volume,
                            duck=cfg.duck_music, normalize=cfg.normalize_audio, duck_strength=cfg.duck_strength)
     graph = ";".join(vg + ag)
@@ -491,6 +518,25 @@ def render_main(raw: str, out: str, *, cfg, ass_path: Optional[str], keep: Optio
 
 
 def make_outro(out: str, cfg) -> str:
+    """The closing card is the same for every clip, so it is made once per setting and copied afterwards."""
+    import hashlib
+    import shutil
+    key = hashlib.sha1(repr((cfg.outro_lines, getattr(cfg, "outro_sec", 2.0), getattr(cfg, "outro_bg", ""),
+                             cfg.outro_font, W, H)).encode()).hexdigest()[:10]
+    cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(out))), f"outro_{key}.mp4")
+    if file_ok(cache):
+        shutil.copyfile(cache, out)
+        return out
+    _make_outro(out, cfg)
+    try:
+        shutil.copyfile(out, cache + ".tmp")
+        os.replace(cache + ".tmp", cache)
+    except OSError:
+        pass
+    return out
+
+
+def _make_outro(out: str, cfg) -> str:
     lines = [l for l in cfg.outro_lines.split("|")] + ["", "", ""]
     font = f":fontfile='{ff_path(cfg.outro_font)}'" if cfg.outro_font else ""
     spec = [(lines[0], 60, "white", 700), (lines[1], 45, "white", 820), (lines[2], 45, "yellow", 900)]

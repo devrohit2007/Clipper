@@ -20,13 +20,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from modules import captions, video_editor, youtube_uploader  # noqa: E402
 from modules.pipeline import Ctx, require_tools, run_job, upload_and_cleanup  # noqa: E402,F401
 from modules.scheduling import Scheduler  # noqa: E402
-from modules.utilities import (ClipperError, ConfigError, Config, JobState, check_dependencies,  # noqa: E402
+from modules.utilities import (parse_ts, ClipperError, ConfigError, Config, JobState, check_dependencies,  # noqa: E402
                                format_dependency_report, load_env_file, log, redact, setup_logging)
 
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="AI YouTube clipping agent")
     p.add_argument("url", nargs="?", help="YouTube video URL")
+    p.add_argument("--file", help="use a video file on this computer instead of a link")
+    p.add_argument("--from", dest="range_from", help="only use the video from this time, e.g. 1:30 or 90")
+    p.add_argument("--to", dest="range_to", help="only use the video up to this time, e.g. 10:00")
+    p.add_argument("--parts", type=int, metavar="SECONDS", help="cut equal parts of this length, no AI (adds Part 1, 2... labels)")
     p.add_argument("--style", choices=captions.STYLE_NAMES, help="caption style (default: karaoke)")
     p.add_argument("--clips", type=int, help="number of clips (default 3)")
     p.add_argument("--durations", help="allowed clip lengths, e.g. 30,45,60")
@@ -54,13 +58,24 @@ def apply_args(cfg: Config, a) -> Config:
         cfg.auto_upload = False
     if a.srt:
         cfg.export_srt = True
+    try:
+        if a.range_from:
+            cfg.range_start = float(parse_ts(a.range_from))
+        if a.range_to:
+            cfg.range_end = float(parse_ts(a.range_to))
+    except ValueError:
+        raise ConfigError("--from / --to must be a time like 90 or 1:30") from None
+    if a.parts:
+        cfg.make_mode, cfg.part_seconds = "parts", a.parts
+    if a.file:
+        cfg.source_file = os.path.abspath(os.path.expanduser(a.file))
     cfg.validate()
     return cfg
 
 
 def run_pipeline(url: str, cfg: Config, a) -> int:
-    require_tools()
-    info = video_editor.get_info(url)
+    require_tools(local_only=bool(cfg.source_file))
+    info = video_editor.local_info(cfg.source_file) if cfg.source_file else video_editor.get_info(url)
     state = JobState(os.path.join(cfg.output_dir, "jobs", f"{info['id']}.json"))   # one JSON file per video
     if a.fresh:
         state.data = {"clips": {}}
@@ -95,7 +110,9 @@ def main(argv=None) -> int:
             youtube_uploader.load_credentials(cfg)
             print("YouTube authorisation OK.")
             return 0
-        url = a.url or input("\nPaste YouTube URL: ").strip()
+        url = a.url or ("" if a.file else input("\nPaste YouTube URL: ").strip())
+        if a.file:
+            url = cfg.source_file
         if not url:
             print("No URL given.", file=sys.stderr)
             return 2

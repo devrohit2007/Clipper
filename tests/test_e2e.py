@@ -404,7 +404,7 @@ def test_gemini_watches_first_and_only_the_chosen_part_is_transcribed(rig, monke
     assert seen["watch"] == 1 and seen["parts"] == [45]                   # 25-50 s plus padding, clamped to the video: 15-60 s
     plan = app.store.job(r["id"])["data"]["plan"]
     assert len(plan) == 1 and 24 <= plan[0]["start"] <= 27 and 49 <= plan[0]["end"] <= 51
-    tr = json.load(open(next(Path(tmp, "tmp").rglob("transcript.json"))))
+    tr = json.load(open(next(Path(tmp, "tmp").rglob("*transcript_partial.json"))))
     assert tr["partial"] is True and tr["windows"] == [[15.0, 60.0]]
     log = open(calls["ytdlp_log"]).read()
     assert "--download-sections *15.00-60.00 -f bestaudio/best" in log

@@ -161,6 +161,48 @@ def tweet_ass(layout: Layout, name: str, handle: str, *, font: str = "Noto Sans"
     return "\n".join(header + ev) + "\n"
 
 
+BADGE_SIZE = 62
+BADGE_PAD_X, BADGE_PAD_Y, BADGE_ROUND = 26, 12, 14
+
+
+def badge_xy(layout=None) -> tuple[int, int]:
+    """Top-left corner of the Part badge: where the tweet card would start."""
+    return 48, 72
+
+
+def badge_ass(text: str, color: str = "#1D9BF0", *, font: str = "Noto Sans", font_hindi: str = "Noto Sans Devanagari") -> str:
+    """A rounded coloured label with white text ("Part 3") in the top-left corner, for the whole clip.
+    The box is an ASS drawing (a rectangle whose outline rounds the corners), so its colour does not depend on
+    how a renderer treats BorderStyle."""
+    text = clean_text(text) or "Part"
+    face = font_hindi if DEVANAGARI.search(text) else font
+    tw = int(text_px(text, BADGE_SIZE) * 1.06) + 6
+    th = int(BADGE_SIZE * 1.18)
+    x, y = badge_xy()
+    r = BADGE_ROUND
+    bx, by = x + r, y + r                                  # the outline grows outward by r
+    box_w, box_h = tw + 2 * BADGE_PAD_X - 2 * r, th + 2 * BADGE_PAD_Y - 2 * r
+    box_w, box_h = max(2, box_w), max(2, box_h)
+    col = ass_color(color)
+    tag = "&H" + col.strip("&H")[-6:] + "&"            # inside {} tags the colour has no alpha part
+    header = [
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {W}", f"PlayResY: {H}", "WrapStyle: 2", "ScaledBorderAndShadow: yes", "",
+        "[V4+ Styles]",
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,"
+        "Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,"
+        "MarginV,Encoding",
+        f"Style: Box,{font},20,{col},{col},{col},{col},0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
+        _style("Label", face, BADGE_SIZE, "#FFFFFF", 1),
+        "", "[Events]", "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
+    ]
+    ev = [
+        f"Dialogue: 0,0:00:00.00,{BIG},Box,,0,0,0,,{{\\an7\\pos({bx},{by})\\bord{r}\\1c{tag}\\3c{tag}\\p1}}"
+        f"m 0 0 l {box_w} 0 {box_w} {box_h} 0 {box_h}{{\\p0}}",
+        f"Dialogue: 1,0:00:00.00,{BIG},Label,,0,0,0,,{{\\an7\\pos({x + BADGE_PAD_X},{y + BADGE_PAD_Y})}}{_esc(text)}",
+    ]
+    return "\n".join(header + ev) + "\n"
+
+
 def avatar_filters(src_idx: Optional[int], x: int, y: int, base: str, out: str) -> list[str]:
     """Round profile picture overlaid at (x, y). With no picture a plain blue disc is drawn."""
     r = AVATAR // 2

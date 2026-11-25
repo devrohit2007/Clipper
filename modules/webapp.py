@@ -39,6 +39,8 @@ MAX_JSON = 2 * 1024 * 1024
 UPLOAD_RULES = {"music": ({".mp3", ".m4a", ".wav", ".ogg", ".aac", ".flac"}, 40 * 1024 * 1024),
                 "logo": ({".png", ".jpg", ".jpeg", ".webp"}, 5 * 1024 * 1024),
                 "font": ({".ttf", ".otf"}, 15 * 1024 * 1024)}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".ts", ".flv", ".3gp"}
+VIDEO_LIMIT = 8 * 1024 * 1024 * 1024
 SESSION_SECONDS = 30 * 24 * 3600
 MAX_DRAIN = 64 * 1024 * 1024
 
@@ -202,6 +204,7 @@ class App:
         acct = self.account_for(job["options"])
         if acct:
             cfg.youtube_token_file = acct["token_file"]
+        cfg.source_file = str(job["options"].get("local_file") or "")        # set by the server only, see r_create_job
         return cfg
 
     def make_ctx(self, job: dict) -> pipeline.Ctx:
@@ -314,6 +317,7 @@ class App:
             raise HttpError(404, "Job not found")
         data = job["data"]
         clips = []
+        cfg = None
         try:
             cfg = self.cfg_for(job)
             base = {"template": cfg.template, "caption_mode": "off" if not cfg.caption_enabled else cfg.caption_mode,
@@ -326,7 +330,7 @@ class App:
             f = cs.get("file") or ""
             m = cs.get("meta") or {}
             title = m.get("title") or c.get("title") or ""
-            clips.append({**c, "look": {**(cs.get("look") or {}), **({"tweet_avatar": os.path.basename(cs["look"]["tweet_avatar"])} if (cs.get("look") or {}).get("tweet_avatar") else {})}, "look_base": base,
+            clips.append({**c, "part_label": pipeline.part_label(cfg, c) if cfg else "", "look": {**(cs.get("look") or {}), **({"tweet_avatar": os.path.basename(cs["look"]["tweet_avatar"])} if (cs.get("look") or {}).get("tweet_avatar") else {})}, "look_base": base,
                           "look_defaults": {"tweet_text": title, "caption_text": m.get("cover_text") or c.get("hook") or title}, "status": cs.get("status", "planned"), "error": cs.get("error", ""),
                           "meta": cs.get("meta"), "captions": cs.get("captions", []), "caption_notes": cs.get("caption_notes", []),
                           "publish_at": cs.get("publish_at"), "youtube_id": cs.get("youtube_id"), "mode": cs.get("mode"),
@@ -335,6 +339,8 @@ class App:
                 "progress": job["progress"], "message": job["message"], "error": job["error"], "options": job["options"],
                 "created": job["created"], "updated": job["updated"], "info": data.get("info"),
                 "language": data.get("language"), "engine": data.get("transcript_engine"), "clips": clips,
+                "make": data.get("make") or job["options"].get("make_mode") or "ai", "range": data.get("range"),
+                "own_file": bool((data.get("info") or {}).get("local_file") or job["options"].get("local_file")),
                 "busy": bool(self.store.pending_tasks(jid))}
 
     def remove_job_files(self, job: dict) -> None:
@@ -692,15 +698,123 @@ def r_jobs(req):
 def r_create_job(req):
     body = req.json()
     url = str(body.get("url", "")).strip()
-    if not YT_URL.match(url):
-        raise HttpError(400, "Paste a YouTube link (youtube.com or youtu.be)")
+    local = ""
+    if body.get("file") or body.get("path"):                            # your own video: an uploaded one, or a path
+        local = resolve_video(req.app, str(body.get("file") or ""), str(body.get("path") or ""))
+        url = local
+    elif not YT_URL.match(url):
+        raise HttpError(400, "Paste a YouTube link (youtube.com or youtu.be), or choose a video file")
     opts = settings.clean_overrides(body.get("options", {}), allow_job=True)
     if opts.get("mode") not in (None, "auto", "review"):
         raise HttpError(400, "Mode must be auto or review")
-    settings.build_config(req.app.store.get_overrides(), opts)          # fail now, not after queueing
+    if local:
+        opts["local_file"] = local
+    try:
+        settings.build_config(req.app.store.get_overrides(), opts)      # fail now, not after queueing
+    except ConfigError as e:
+        raise HttpError(400, str(e)) from None
     jid = req.app.store.create_job(url, opts)
     req.app.enqueue("pipeline", jid)
     return 201, {"id": jid}
+
+
+# ---- your own videos
+def video_dir(app: App) -> str:
+    return os.path.join(app.data_dir, "videos")
+
+
+def resolve_video(app: App, name: str, path: str) -> str:
+    """Absolute path of a video the user chose: one uploaded here (by name) or a file path typed in.
+    Only real video files qualify (extension and a quick ffprobe look), so this cannot be used to read other files."""
+    if name:
+        p = os.path.join(video_dir(app), safe_name(name, VIDEO_EXTS))
+    else:
+        p = os.path.abspath(os.path.expanduser(path.strip().strip('"').strip("'")))
+        if Path(p).suffix.lower() not in VIDEO_EXTS:
+            raise HttpError(400, f"That is not a video file. Use one of: {', '.join(sorted(VIDEO_EXTS))}")
+    if not os.path.isfile(p):
+        raise HttpError(404, "Video file not found" + ("" if name else ": check the path (it must be on the computer running Clipper)"))
+    try:
+        video_editor.local_info(p)
+    except ClipperError as e:
+        raise HttpError(400, str(e)) from None
+    return p
+
+
+_DURATIONS: dict = {}                                    # (path, size, mtime) -> seconds, so listing stays instant
+
+
+def video_duration(p: str) -> float:
+    st = os.stat(p)
+    key = (p, st.st_size, int(st.st_mtime))
+    if key not in _DURATIONS:
+        try:
+            _DURATIONS[key] = float(video_editor.probe(p)["duration"])
+        except ClipperError:
+            return 0.0
+    return _DURATIONS[key]
+
+
+@route("GET", "/api/videos")
+def r_videos(req):
+    d, out = video_dir(req.app), []
+    if os.path.isdir(d):
+        for n in sorted(os.listdir(d), key=lambda n: -os.path.getmtime(os.path.join(d, n))):
+            p = os.path.join(d, n)
+            if os.path.isfile(p) and Path(n).suffix.lower() in VIDEO_EXTS:
+                out.append({"name": n, "size": os.path.getsize(p), "duration": video_duration(p)})
+    return 200, {"videos": out, "free_mb": shutil.disk_usage(req.app.data_dir).free // (1024 * 1024)}
+
+
+@route("POST", "/api/videos")
+def r_upload_video(req):
+    app = req.app
+    name = safe_name(req.q.get("name", ""), VIDEO_EXTS)
+    n = int(req.h.headers.get("Content-Length") or 0)
+    if n <= 0:
+        raise HttpError(400, "Empty file")
+    if n > VIDEO_LIMIT:
+        raise HttpError(413, f"Video too large (limit {VIDEO_LIMIT // (1024 ** 3)} GB)")
+    d = video_dir(app)
+    os.makedirs(d, exist_ok=True)
+    free = shutil.disk_usage(d).free
+    if n + 300 * 1024 * 1024 > free:                       # keep room for the clips that will be made from it
+        raise HttpError(507, f"Not enough free space: the video is {n // (1024 * 1024)} MB, {free // (1024 * 1024)} MB are free")
+    req.body_read = True
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            left = n
+            while left > 0:
+                chunk = req.h.rfile.read(min(1024 * 1024, left))
+                if not chunk:
+                    raise HttpError(400, "Upload was cut off")
+                f.write(chunk)
+                left -= len(chunk)
+        try:
+            info = video_editor.local_info(tmp)
+        except ClipperError as e:
+            raise HttpError(400, str(e)) from None
+        dest = os.path.join(d, name)
+        if os.path.exists(dest):                           # never replace a video a job may be using
+            stem, ext = os.path.splitext(name)
+            dest = os.path.join(d, f"{stem}-{int(time.time())}{ext}")
+        os.replace(tmp, dest)
+    finally:
+        safe_remove(tmp)
+    return 201, {"name": os.path.basename(dest), "size": n, "duration": info["duration"]}
+
+
+@route("DELETE", "/api/videos")
+def r_delete_video(req):
+    name = safe_name(req.q.get("name", ""), VIDEO_EXTS)
+    p = os.path.join(video_dir(req.app), name)
+    if not os.path.isfile(p):
+        raise HttpError(404, "File not found")
+    if any((j.get("url") == p) and j["status"] in ("queued", "running") for j in req.app.store.jobs(1000)):
+        raise HttpError(409, "A job is using this video right now")
+    os.remove(p)
+    return 200, {"ok": True}
 
 
 @route("GET", r"/api/jobs/(\d+)")
@@ -1059,7 +1173,7 @@ TWEET_SAMPLES = {"en": "Why most people quit too early and what to do about it",
                  "hinglish": "Zyadatar log jaldi haar kyun maan lete hain"}
 
 
-def render_preview(cfg: Config, workdir: str) -> bytes:
+def render_preview(cfg: Config, workdir: str, part_label: str = "") -> bytes:
     """One frame built with the same filter graph, layout and caption code as a real render, on a stand-in 16:9 video."""
     lang = cfg.caption_language if cfg.caption_language in SAMPLES else "en"
     sw, sh = 1280, 720
@@ -1067,7 +1181,7 @@ def render_preview(cfg: Config, workdir: str) -> bytes:
     fit = template in templates.FIT_TEMPLATES
     layout = tweet_path = None
     if fit:
-        layout = templates.plan_layout(template, sw, sh, TWEET_SAMPLES[lang])
+        layout = templates.plan_layout(template, sw, sh, TWEET_SAMPLES[lang] + (f" - {part_label}" if part_label else ""))
         if template == "tweet":
             tweet_path = os.path.join(workdir, "tweet.ass")
             open(tweet_path, "w", encoding="utf-8").write(templates.tweet_ass(
@@ -1096,6 +1210,11 @@ def render_preview(cfg: Config, workdir: str) -> bytes:
     if ass:
         ass_path = os.path.join(workdir, "p.ass")
         open(ass_path, "w", encoding="utf-8").write(ass)
+    badge_path = None
+    if part_label and cfg.part_badge and template != "tweet":
+        badge_path = os.path.join(workdir, "badge.ass")
+        open(badge_path, "w", encoding="utf-8").write(templates.badge_ass(
+            part_label, cfg.part_color, font=cfg.caption_font, font_hindi=cfg.caption_font_hindi))
     inputs = ["-f", "lavfi", "-i", f"color=c=0x38424d:s={sw}x{sh}:r=10:d=4,drawgrid=w=160:h=90:t=2:c=white@0.14"]
     logo_idx = avatar_idx = None
     avatar_default = False
@@ -1114,7 +1233,7 @@ def render_preview(cfg: Config, workdir: str) -> bytes:
         ass_name=os.path.basename(ass_path) if ass_path else None, fonts_dir=cfg.caption_fonts_dir, logo_idx=logo_idx,
         logo_size=cfg.logo_size, logo_pos=cfg.logo_position, logo_opacity=cfg.logo_opacity, template=template,
         layout=layout, tweet_ass_name=os.path.basename(tweet_path) if tweet_path else None, avatar_idx=avatar_idx,
-        avatar_default=avatar_default)
+        avatar_default=avatar_default, badge_ass_name=os.path.basename(badge_path) if badge_path else None)
     out = os.path.join(workdir, "p.png")
     run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(vg + ["[vout]scale=360:640[o]"]), "-map", "[o]",
          "-ss", f"{t:.2f}", "-frames:v", "1", out], cwd=workdir, timeout=60)
@@ -1134,7 +1253,8 @@ def r_preview(req):
         raise HttpError(429, "Preview is busy")
     try:
         with tempfile.TemporaryDirectory() as d:
-            png = render_preview(cfg, d)
+            label = pipeline.part_label(cfg, {"part": 1, "parts": 5}) if body.get("parts") else ""
+            png = render_preview(cfg, d, label)
     finally:
         app.preview_lock.release()
     req.h._send(200, png, "image/png")

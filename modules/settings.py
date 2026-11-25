@@ -84,6 +84,12 @@ SCHEMA = [
     F("silence_db", "Silence threshold (dB)", "Audio", "float", min=-60, max=-15, step=1, advanced=True),
     F("silence_min_sec", "Shortest silence to cut (s)", "Audio", "float", min=0.2, max=5, step=0.1, advanced=True),
     F("silence_keep_sec", "Pause kept at each cut (s)", "Audio", "float", min=0, max=1, step=0.05, advanced=True),
+    # ---- Parts (equal parts, no AI)
+    F("part_seconds", "Length of each part (seconds)", "Parts", "int", min=10, max=180),
+    F("part_badge", "Show Part 1, Part 2... on each part", "Parts", "bool", help_="At the top-left, where the tweet card goes. On the white tweet template it is the card text."),
+    F("part_word", "Word before the number", "Parts", "text", help_="Part, Bhaag, Episode..."),
+    F("part_total", "Show the total (Part 1/5)", "Parts", "bool"),
+    F("part_color", "Badge colour", "Parts", "color"),
     # ---- Clips
     F("clip_count", "Clips per video", "Clips", "int", min=1, max=10),
     F("clip_durations", "Allowed lengths (seconds)", "Clips", "csv_int", help_="Comma separated, e.g. 15,30,45,60"),
@@ -135,7 +141,7 @@ _REGROUP = {"Look": ("template", "tweet_name", "tweet_handle", "tweet_avatar", "
             "Logo and end screen": ("logo_file", "logo_size", "logo_position", "logo_opacity", "outro_enabled", "outro_lines",
                                     "outro_sec", "outro_bg", "transition_sec"),
             "Video quality": ("max_height", "crf", "x264_preset")}
-_GROUP_ORDER = ["Look", "Captions", "Logo and end screen", "Video quality", "Audio", "Clips", "AI", "Publishing", "Storage"]
+_GROUP_ORDER = ["Look", "Parts", "Captions", "Logo and end screen", "Video quality", "Audio", "Clips", "AI", "Publishing", "Storage"]
 for _g, _keys in _REGROUP.items():
     for _f in SCHEMA:
         if _f["key"] in _keys:
@@ -147,6 +153,8 @@ MISSING_FROM_CONFIG = [k for k in BY_KEY if k not in CONFIG_FIELDS]
 assert not MISSING_FROM_CONFIG, MISSING_FROM_CONFIG
 # Job-level options that are not Config settings.
 JOB_ONLY = {"mode", "account", "fresh"}
+# Per-video choices that are Config fields but not saved defaults.
+JOB_CFG = {"make_mode", "range_start", "range_end"}
 
 
 def coerce(key: str, value: Any) -> Any:
@@ -190,19 +198,37 @@ def clean_overrides(d: dict, allow_job: bool = False) -> dict:
         if allow_job and k in JOB_ONLY:
             out[k] = v
             continue
+        if allow_job and k in JOB_CFG:
+            out[k] = coerce_job(k, v)
+            continue
         out[k] = coerce(k, v)
     return out
+
+
+def coerce_job(key: str, value: Any) -> Any:
+    if key == "make_mode":
+        if value not in ("ai", "parts"):
+            raise ConfigError("make_mode must be ai or parts")
+        return value
+    from .utilities import parse_ts          # range_start / range_end: seconds or 1:30 style
+    try:
+        return 0.0 if value in ("", None) else float(parse_ts(value))
+    except ValueError:
+        raise ConfigError(f"{key} is not a time (use 90 or 1:30)") from None
 
 
 def build_config(overrides: dict | None = None, job_options: dict | None = None) -> Config:
     """defaults < .env < saved overrides < job options. Raises ConfigError on invalid combinations."""
     cfg = Config.from_env()
     merged = {**clean_overrides(overrides or {}), **clean_overrides({k: v for k, v in (job_options or {}).items()
-                                                                  if k not in JOB_ONLY and k in BY_KEY})}
+                                                                  if k not in JOB_ONLY and k in BY_KEY and k not in JOB_CFG})}
     if "output_dir" in merged and "temp_dir" not in merged and not os.environ.get("TEMP_DIR"):
         cfg.temp_dir = ""
     for k, v in merged.items():
         setattr(cfg, k, v)
+    for k in JOB_CFG:                                        # per-video choices
+        if k in (job_options or {}):
+            setattr(cfg, k, coerce_job(k, job_options[k]))
     cfg.finalize()
     return cfg
 

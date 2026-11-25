@@ -26,7 +26,7 @@ runs on your own machine (`http://localhost:8000`), or from the command line.
 5. [Get your keys](#get-your-keys) (Gemini, Groq, YouTube)
 6. [Configure](#configure)
 7. [Run it](#run-it)
-8. [Using the web app](#using-the-web-app)
+8. [Using the web app](#using-the-web-app) · [Time range, your own videos, equal parts](#time-range-your-own-videos-and-equal-parts)
 9. [Command line](#command-line)
 10. [Templates, captions and quality](#templates-captions-and-quality)
 11. [Live streams](#live-streams)
@@ -47,6 +47,10 @@ runs on your own machine (`http://localhost:8000`), or from the command line.
   downloaded and transcribed (not the whole video), then every start and end time is checked against the real speech and
   snapped to word boundaries, so clips begin and end on full sentences. A "transcribe everything first" mode is
   available too.
+- **Only the part you want.** Set a start and end time and Clipper only looks at, downloads and transcribes that part.
+- **Your own videos.** Upload a file (or type its path on the computer running Clipper) and cut clips from it.
+- **Equal parts, no AI.** Cut a video, or a time range of it, into Part 1, Part 2, Part 3... with a Part label at the
+  top-left (or inside the tweet card). Works without any key, captions optional.
 - **Four looks (templates).** Blurred background (default), white page with a tweet-style card, plain black, or
   full screen that follows the speaker's face.
 - **Captions.** Word by word (karaoke style, five styles), one fixed line for the whole clip, or none. Works for
@@ -111,7 +115,7 @@ Accounts and keys (all have free tiers):
 Without YouTube credentials you can still make clips and download them.
 
 Storage tips: each rendered clip is roughly 6 to 25 MB. A saved live stream can take 1 to 3 GB per hour, so pick a short
-window for live streams and use Setup → Clean old working files now and then.
+window for live streams and use Settings → System → Clean old working files now and then.
 
 ---
 
@@ -419,32 +423,50 @@ on a network you trust.
 
 ## Using the web app
 
-Five screens along the bottom (phone) or side (desktop).
+Three screens along the bottom (phone) or side (desktop): **Create**, **Clips**, **Settings**.
 
-**New clips**
-1. Paste the YouTube link.
-2. Choose **Review first** (clips wait for you) or **Upload automatically**.
-3. Pick the look: template, captions (word by word, one line, off), language and style. A live preview shows the
-   result. For the white tweet template, fill in the name, handle and picture.
-4. Choose clip count, allowed lengths and download quality.
-5. Press **Find clips**.
+**Create** is one screen with three steps:
+1. **Pick the video**: a YouTube link (a live stream works too) or **My video file**. Tick *Use only part of the video*
+   to give a From and To time (`90`, `1:30` or `1:02:03`).
+2. **What should I make?** *Best moments* (Gemini picks the strongest parts: choose how many and what to look for) or
+   *Equal parts* (choose the length of each part; no AI).
+3. **Make it yours**: template, captions (word by word, one line, off), language and style, and for equal parts the
+   Part label (word, colour, total). A live preview made by the real renderer shows the result. For the white tweet
+   template, fill in the name, handle and picture. Choose **Review first** or **Upload automatically**.
 
-"Save these as my defaults" keeps your choices for next time. "More options" holds per-video extras: what kind of
-moments to look for, visibility, ignoring saved results, and how much of a live stream to use.
+Press **Make clips**. "Save as my defaults" keeps your look for next time. **More** (next to Make clips) holds the rest
+for this video: download quality, how Gemini finds clips, how much of a live stream to use, visibility, YouTube account,
+ignoring saved results.
 
 **Clips**: every job with live progress and a full log. Open a job to see each rendered clip. For each one you can edit the
 title, description, hashtags, category and publish time, the look of that clip (template, captions, tweet text, name,
 handle, picture, caption text) and the caption words; then **Save**, **Re-render**, **Upload** or **Discard**.
 **Re-render all clips** applies your current Style settings to every clip that is not uploaded yet.
 
-**Style**: every setting, grouped: Look, Captions, Logo and end screen, Video quality, Audio, Clips, AI, Publishing,
-Storage. It has a live preview made by the same renderer as the real clips, so what you save is what you get. You can
-save presets and upload music, a logo and fonts.
+**Settings** opens a short list:
+- **Look and defaults**: every setting, grouped (Look, Parts, Captions, Logo and end screen, Video quality, Audio, Clips,
+  AI, Publishing, Storage), with a live preview. You can save presets and upload music, a logo and fonts.
+- **YouTube accounts**: add channels and sign in to each.
+- **My videos**: the files you added, free space, remove.
+- **System**: health check (Gemini, Groq, YouTube, FFmpeg, yt-dlp, fonts, disk space), password, clean-up, light or dark.
 
-**Accounts**: add YouTube channels and sign in to each.
+### Time range, your own videos and equal parts
 
-**Setup**: a health check (Gemini, Groq, YouTube, FFmpeg, yt-dlp, fonts, disk space), password, clean-up of old temporary
-files, and light or dark theme.
+| You want | Do this | What is touched |
+|---|---|---|
+| Clips from one part of a video | Create → tick *Use only part of the video* → From / To | Gemini is shown only that part; only that part's audio is downloaded and transcribed |
+| Clips from a file you have | Create → *My video file* → choose a file (uploaded to `data/videos/`) or type its path | Nothing is downloaded. Your original is never changed |
+| Part 1, 2, 3... of a video | Create → *Equal parts* → length | Nothing is transcribed up front; each part is downloaded when it renders |
+
+Good to know:
+- For **your own file**, Gemini cannot watch it, so *Best moments* transcribes the chosen range (or the whole file) and
+  picks from the text. Use a time range to keep that small.
+- **Equal parts** never calls Gemini. Word captions transcribe each part's own audio only (one request per part).
+  Choose *Captions: Off* for no speech service at all. A short leftover (under 35%) joins the last part; a bigger one
+  becomes its own part. Up to 150 parts per job.
+- The Part label sits where the tweet card would be. On the **Tweet card** template it is part of the card text.
+- Allowed video types: mp4, mov, mkv, webm, m4v, avi, ts, flv, 3gp, up to 8 GB. Typed paths must be on the computer
+  running Clipper (on a phone, the phone).
 
 How it behaves:
 
@@ -467,6 +489,9 @@ python agent.py URL --durations 30,45  # allowed clip lengths
 python agent.py URL --review           # ask before each upload
 python agent.py URL --no-upload        # render only, never upload
 python agent.py URL --fresh            # ignore the saved transcript and plan for this video
+python agent.py URL --from 1:30 --to 10:00   # only this part of the video
+python agent.py --file ~/Movies/talk.mp4     # your own video file
+python agent.py URL --parts 60 --no-upload   # equal 60 s parts, Part 1, 2, 3..., no AI
 python agent.py --check                # dependency report
 python agent.py --auth                 # YouTube sign-in only
 ```
@@ -550,18 +575,18 @@ If you see empty boxes instead of Hindi letters, the font is missing.
 3. Set `CAPTION_FONTS_DIR=~/fonts` in `.env` (on Windows, a full path such as `C:\Users\you\fonts`).
 4. Make sure the font names in `.env` are the fonts' family names.
 
-You can also upload fonts on the Style screen.
+You can also upload fonts in Settings → Look and defaults.
 
 ### Music and logo
 
-Put an mp3 or flac in `MUSIC_FILE` and a PNG in `LOGO_FILE`, or upload them on the Style screen. Music is lowered under
+Put an mp3 or flac in `MUSIC_FILE` and a PNG in `LOGO_FILE`, or upload them in Settings → Look and defaults. Music is lowered under
 speech automatically.
 
 ---
 
 ## Settings reference
 
-Every item can be set in `.env`. Most can also be changed on the Style screen. Full comments are in `.env.example`.
+Every item can be set in `.env`. Most can also be changed in Settings → Look and defaults. Full comments are in `.env.example`.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -584,6 +609,7 @@ Every item can be set in `.env`. Most can also be changed on the Style screen. F
 | `LOGO_SIZE`, `INTRO_HOOK`, `OUTRO_ENABLED`, `OUTRO_LINES`, `TRANSITION_SEC` | | Logo, intro text, outro and crossfade. |
 | `MUSIC_VOLUME`, `DUCK_MUSIC`, `NORMALIZE_AUDIO` | `0.15`, `true`, `true` | Audio. |
 | `REMOVE_SILENCE`, `SILENCE_DB`, `SILENCE_MIN_SEC` | `false`, `-35`, `0.7` | Cut long pauses. |
+| `PART_SECONDS`, `PART_BADGE`, `PART_WORD`, `PART_TOTAL`, `PART_COLOR` | `60`, `true`, `Part`, `false`, `#1D9BF0` | Equal-parts mode: length (10-180 s) and the Part label. |
 | `LIVE_MINUTES` | `60` | Live streams: how much to save (0 = everything available). |
 | `AUTO_UPLOAD`, `REVIEW_MODE` | `true`, `false` | Upload automatically, or ask first. |
 | `PUBLISH_START_DELAY_MIN`, `PUBLISH_INTERVAL_HOURS` | `20`, `3` | When the first clip goes public and the gap between clips. |
@@ -594,7 +620,7 @@ Every item can be set in `.env`. Most can also be changed on the Style screen. F
 
 ## Troubleshooting
 
-Start with `python agent.py --check`, or the **Setup** screen in the web app. The job **log** on the Clips screen shows
+Start with `python agent.py --check`, or **Settings → System** in the web app. The job **log** on the Clips screen shows
 what went wrong, with secrets hidden.
 
 | Problem | Cause and fix |
@@ -621,7 +647,7 @@ what went wrong, with secrets hidden.
 | `Killed`, `Cannot allocate memory`, or the job stops on a phone | Not enough RAM. Close other apps, lower **Download quality** to 720p or 480p, and keep Termux awake (`sh start.sh`, disable battery optimisation). |
 | `No face found (or OpenCV missing)` | Face follow needs OpenCV; see [Face follow](#face-follow). It crops the centre in the meantime. |
 | `The saved recording of this live stream was deleted` | Temporary files were cleaned up. Start a new job from the finished video. |
-| `No space left on device` | Open **Setup → Clean old working files**, delete old files in `output/`, or lower quality and live-stream length. |
+| `No space left on device` | Open **Settings → System → Clean old working files**, delete old files in `output/`, or lower quality and live-stream length. |
 | The preview looks fine but a clip looks different | Press **Re-render** on the clip. Existing clips pick up new Style settings only when re-rendered. |
 | A job failed halfway | Open it and press **Try again**. Finished work (transcript, plan, downloaded parts) is reused. |
 
@@ -717,7 +743,7 @@ modules/            the code: pipeline, video_editor, captions, templates,
                     youtube_uploader, scheduling, store, settings, webapp, utilities
 ui/                 the web app (plain HTML, CSS, JavaScript; no build step)
 termux-boot/        optional start-on-boot script for Termux
-tests/              automated tests
+tests/              automated tests (test_parts.py: ranges, own files, equal parts; test_ui.py: the Create screen in a browser)
 ```
 
 ---
@@ -743,7 +769,7 @@ It takes several minutes. Tests that need FFmpeg's `ass` filter are skipped if i
 | `video` (default) | Gemini watches the video through its YouTube link and names the moments. Only those parts (plus about 10 s before and 15 s after) are downloaded and transcribed. A one-hour video needs minutes of audio instead of an hour. | Speed, long videos, small phones |
 | `transcript` | The whole audio is downloaded and transcribed first, then Gemini reads the transcript. | Private or unlisted videos, the most exact timing |
 
-Choose it under **More options** on New clips, in Style → Clips, or with `CLIP_FINDER` in `.env`.
+Choose it under **More** on Create, in Settings → Look and defaults → Clips, or with `CLIP_FINDER` in `.env`.
 
 Good to know about `video` mode:
 - Gemini can only watch **public** YouTube videos. If it cannot (private video, no access, quota), Clipper says so in the
@@ -752,7 +778,8 @@ Good to know about `video` mode:
   (check the Gemini API pricing page for the current number); the `transcript` mode does not use that allowance.
 - Gemini's timestamps can be a few seconds off. That is why each moment is transcribed with extra seconds around it and
   then snapped to real sentence boundaries. A moment that does not line up with speech is dropped.
-- Live streams always use the saved recording and the `transcript` mode.
+- Live streams and your own video files always use the `transcript` mode (on the chosen time range if you set one).
+- With a time range, Gemini is only shown that range, and only moments inside it are used.
 - This mode has been tested with a stand-in for Gemini and yt-dlp, not with the real services.
 
 ## Limitations

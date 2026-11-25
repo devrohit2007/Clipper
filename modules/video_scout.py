@@ -26,10 +26,11 @@ class ScoutError(ClipperError):
     pass
 
 
-def chunk_ranges(duration: float, size: int = CHUNK_SEC, overlap: int = OVERLAP_SEC) -> list[tuple[float, float]]:
-    if duration <= size * 1.25:
-        return [(0.0, duration)]
-    out, start = [], 0.0
+def chunk_ranges(duration: float, size: int = CHUNK_SEC, overlap: int = OVERLAP_SEC, lo: float = 0.0) -> list[tuple[float, float]]:
+    """Pieces for Gemini to watch, covering [lo, duration]. One piece when it is short enough."""
+    if duration - lo <= size * 1.25:
+        return [(lo, duration)]
+    out, start = [], lo
     while start < duration:
         end = min(duration, start + size)
         out.append((start, end))
@@ -96,36 +97,52 @@ def _to_absolute(items: list, start: float, end: float, whole: bool) -> list[dic
 
 
 def scout(url: str, info: dict, ask_json: Callable, durations: tuple, count: int, focus: str = "",
-          progress: Optional[Callable] = None) -> list[dict]:
-    """Ask Gemini (watching the video) for candidate moments; returns candidates with absolute seconds."""
+          progress: Optional[Callable] = None, lo: float = 0.0, hi: float = 0.0) -> list[dict]:
+    """Ask Gemini (watching the video) for candidate moments; returns candidates with absolute seconds.
+    lo/hi limit it to one part of the video (hi=0: until the end); Gemini is then only shown that part.
+    Long videos are watched in pieces, a few at a time."""
     duration = float(info.get("duration") or 0)
     if duration <= 0:
         raise ScoutError("video length unknown")
-    ranges = chunk_ranges(duration)
+    hi = min(hi, duration) if hi else duration
+    if lo >= hi - 5:
+        raise ScoutError("the chosen part of the video is too short")
+    ranges = chunk_ranges(hi, lo=lo)
+    whole = len(ranges) == 1 and lo <= 0 and hi >= duration - 1
     want = max(4, count * 2) if len(ranges) == 1 else max(3, math.ceil(count * 2 / len(ranges)) + 1)
     prompt = build_prompt(info, durations, want, focus)
     raw: list[dict] = []
     failures = 0
-    for i, (s, e) in enumerate(ranges):
-        if progress:
-            progress(i, len(ranges))
+    done = 0
+
+    def watch(piece):
+        s, e = piece
         try:
-            reply = ask_json(video_parts(url, prompt, s, e, whole=len(ranges) == 1), media_low=True)
+            return piece, ask_json(video_parts(url, prompt, s, e, whole=whole), media_low=True), None
         except ClipperError as err:
-            failures += 1
-            log.warning("Gemini could not watch %s-%s: %s", fmt_ts(s), fmt_ts(e), err)
-            continue
-        items = reply.get("clips") if isinstance(reply, dict) else reply
-        found = _to_absolute(items if isinstance(items, list) else [], s, e, len(ranges) == 1)
-        log.info("Gemini found %d possible moments in %s-%s", len(found), fmt_ts(s), fmt_ts(e))
-        raw += found
+            return piece, None, err
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(3, len(ranges))) as pool:
+        for (s, e), reply, err in pool.map(watch, ranges):
+            if progress:
+                progress(done, len(ranges))
+            done += 1
+            if err is not None:
+                failures += 1
+                log.warning("Gemini could not watch %s-%s: %s", fmt_ts(s), fmt_ts(e), err)
+                continue
+            items = reply.get("clips") if isinstance(reply, dict) else reply
+            found = _to_absolute(items if isinstance(items, list) else [], s, e, whole)
+            log.info("Gemini found %d possible moments in %s-%s", len(found), fmt_ts(s), fmt_ts(e))
+            raw += found
     if not raw:
         raise ScoutError("Gemini could not watch this video" if failures == len(ranges) else "Gemini found no moments")
     return raw
 
 
-def shortlist(raw: list[dict], duration: float, count: int, max_overlap: float = 0.2) -> list[dict]:
-    """Best-scoring non-overlapping candidates that lie inside the video."""
+def shortlist(raw: list[dict], duration: float, count: int, max_overlap: float = 0.2, lo: float = 0.0) -> list[dict]:
+    """Best-scoring non-overlapping candidates that lie inside the video (and inside [lo, duration])."""
     def score(r):
         try:
             return float(r.get("score", 0))
@@ -133,9 +150,9 @@ def shortlist(raw: list[dict], duration: float, count: int, max_overlap: float =
             return 0.0
     out: list[dict] = []
     for r in sorted(raw, key=lambda r: -score(r)):
-        if r["start"] >= duration:
+        if r["start"] >= duration or r["end"] <= lo:
             continue
-        r = {**r, "end": min(r["end"], duration)}
+        r = {**r, "start": max(r["start"], lo), "end": min(r["end"], duration)}
         if any(_overlap_ratio(r, a) > max_overlap for a in out):
             continue
         out.append(r)
@@ -144,9 +161,9 @@ def shortlist(raw: list[dict], duration: float, count: int, max_overlap: float =
     return out
 
 
-def windows(cands: list[dict], duration: float) -> list[tuple[float, float]]:
-    """Audio ranges to download: each candidate plus padding, nearby ones merged."""
-    spans = sorted((max(0.0, c["start"] - PAD_BEFORE), min(duration, c["end"] + PAD_AFTER)) for c in cands)
+def windows(cands: list[dict], duration: float, lo: float = 0.0) -> list[tuple[float, float]]:
+    """Audio ranges to download: each candidate plus padding, nearby ones merged (never outside [lo, duration])."""
+    spans = sorted((max(lo, c["start"] - PAD_BEFORE), min(duration, c["end"] + PAD_AFTER)) for c in cands)
     merged: list[list[float]] = []
     for s, e in spans:
         if merged and s - merged[-1][1] <= MERGE_GAP:

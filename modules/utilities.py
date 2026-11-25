@@ -196,6 +196,15 @@ class Config:
     clip_durations: tuple = (15, 30, 45, 60)
     max_overlap: float = 0.2
     min_score: int = 0                # drop clips scoring below this (the best one is always kept)
+    make_mode: str = "ai"                  # ai = pick the best moments | parts = cut equal parts, no AI (per video, not a saved default)
+    range_start: float = 0.0          # only use this part of the video (seconds; end 0 = until the end), per video
+    range_end: float = 0.0
+    source_file: str = ""             # set by the web app for "my own video file" jobs
+    part_seconds: int = 60            # length of each part in "equal parts" mode
+    part_word: str = "Part"
+    part_badge: bool = True
+    part_total: bool = False          # "Part 1/5" instead of "Part 1"
+    part_color: str = "#1D9BF0"
     clip_finder: str = "video"        # video = Gemini watches the video, then only the chosen parts are transcribed | transcript = transcribe everything first
     live_minutes: int = 60            # live streams: use this many minutes before the moment you paste the link (0 = all available)
     clip_focus: str = ""              # free text: what kind of moments to look for
@@ -273,6 +282,12 @@ class Config:
         if not self.clip_durations or any(d <= 0 for d in self.clip_durations):
             raise ConfigError("CLIP_DURATIONS must be positive integers, e.g. 15,30,45,60")
         self.clip_durations = tuple(sorted(set(self.clip_durations)))
+        if self.make_mode not in ("ai", "parts"):
+            raise ConfigError("make_mode must be ai or parts")
+        if self.range_start < 0 or self.range_end < 0 or (self.range_end and self.range_end <= self.range_start + 1):
+            raise ConfigError("The end of the range must be after the start")
+        if not 10 <= self.part_seconds <= 180:
+            raise ConfigError("Part length must be between 10 and 180 seconds")
         if self.clip_finder not in ("video", "transcript"):
             raise ConfigError("clip_finder must be video or transcript")
         if self.live_minutes not in (0, 15, 30, 60, 120):

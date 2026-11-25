@@ -29,9 +29,10 @@ class TranscriptionUnavailable(ClipperError):
     pass
 
 
-def extract_audio(src: str, dst: str, rate: int = 16000) -> str:
-    """Video/audio -> mono 16 kHz FLAC using FFmpeg."""
-    run(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", str(rate), "-c:a", "flac", dst])
+def extract_audio(src: str, dst: str, rate: int = 16000, start: float = 0.0, length: float = 0.0) -> str:
+    """Video/audio -> mono 16 kHz FLAC using FFmpeg. start/length take only that part of the file (fast seek)."""
+    cut = (["-ss", f"{start:.2f}"] if start > 0 else []) + (["-t", f"{length:.2f}"] if length > 0 else [])
+    run(["ffmpeg", "-y", *cut, "-i", src, "-vn", "-ac", "1", "-ar", str(rate), "-c:a", "flac", dst])
     if not os.path.isfile(dst) or os.path.getsize(dst) == 0:
         raise TranscriptionError("audio extraction produced no file")
     return dst
